@@ -1,0 +1,293 @@
+---
+title: "Assignment_final"
+format: html
+editor: visual
+---
+
+-   **dv:** Outcome 1: general election vote share of party.
+
+-   **dv_win**: Outcome 2: 1 if party won the general election, 0 otherwise.
+
+-   **treat:** the treatment: 1 if extremist won, 0 otherwise.
+
+-   **rv:** the running variable: the difference in the vote share between the extremist and the moderate candidate. Positive values indicate higher vote share for the extremist, whereas negative values indicate lower vote share for the extremist.
+
+-   **fully_open_general:** 1 if district is contested; 0 otherwise.
+
+-   **safe_for_party:** 1 if district is safe for the party; 0 otherwise.
+
+-   **absdist:** Absolute ideological distance between candidates.
+
+```{r}
+
+#install.packages("tidyverse")
+library(tidyverse)
+#install.packages("broom")# ggplot(), %>%, mutate(), and friends
+library(broom)  # Convert models to data frames
+#install.packages("rdrobust")
+library(rdrobust)
+#install.packages("estimatr")# For robust nonparametric regression discontinuity
+library(estimatr)  # Run 2SLS models in one step with iv_robust()
+#install.packages("rddensity")
+library(rddensity)  # For nonparametric regression discontinuity density tests
+#install.packages("modelsummary")
+library(modelsummary)  # Create side-by-side regression tables
+#install.packages("kableExtra")
+library(kableExtra) #fancy table formatting
+```
+
+## Data
+
+```{r}
+data <- read_dta("Extremist.dta") |> 
+  select(dv, dv_win, treat, rv, fully_open_general, safe_for_party,absdist) |> 
+  mutate(treat = as.numeric(treat))
+```
+
+## Treatment assignment
+
+```{r}
+# Check treatment assignment
+ggplot(data, aes(x = rv, y = treat, color = treat)) +
+  geom_point(size = 0.5, alpha = 0.5, position = position_jitter(width = 0, height = 0.25, seed = 1234)) + 
+  geom_vline(xintercept = 0) + 
+  labs(x = "Running Variable (rv)", y = "Treatment (treat)") + 
+  guides(color = FALSE)
+```
+
+## Discontinuity
+
+```{r}
+# Check for discontinuity in the running variable around the cutoff
+ggplot(data, aes(x = rv, fill = as.factor(treat))) +
+  geom_histogram(color = "white", boundary = 0) + 
+  geom_vline(xintercept = 0) + 
+  labs(x = "Running Variable (rv)", y = "Count", fill = "Treatment")
+```
+
+## McCrary density test
+
+If the confidence intervals overlap, there’s not any significant difference around the threshold and we’re fine. -\>so we are fine
+
+The confidence intervals overlap so the gap at the cutoff point is random
+
+```{r}
+# McCrary density test
+test_density <- rddensity(data$rv, c = 0)
+summary(test_density)
+rdplotdensity(rdd = test_density, X = data$rv, type = "both")
+
+```
+
+## DV:  *General election vote share* 
+
+### Parametric estimation
+
+#### Average treatment effect
+
+Estimate the effect of an extremist victory in the primary on: the general election vote share of the party
+
+```{r}
+#AVERAGE TREATMENT EFFECT
+#How the running variable explains the general election vote share of party (dv)
+model_simple <- lm(dv ~ rv + treat, data = data)
+tidy(model_simple)
+
+# Check for discontinuity in outcomes across the running variable
+ggplot(data, aes(x = rv, y = dv, color = as.factor(treat))) +
+  geom_point(size = 0.5, alpha = 0.5) + 
+  geom_smooth(data = filter(data, rv <= 0), method = "lm") +
+  geom_smooth(data = filter(data, rv > 0), method = "lm") +
+  geom_vline(xintercept = 0) +
+  labs(x = "Running Variable (rv)", y = "Outcome (dv)", color = "Treatment")
+```
+
+#### Local average treatment effect
+
+```{r}
+
+#Estimating the local effect
+model_bw_10 <- lm(dv ~ rv + treat, data = filter(data, rv >= -.10 & rv <= .10))
+tidy(model_bw_10)
+
+model_bw_5 <- lm(dv ~ rv + treat, data = filter(data, rv >= -.05 & rv <= .05))
+tidy(model_bw_5)
+
+modelsummary(list("Full data" = model_simple, "Bandwidth = 0.10" = model_bw_10, "Bandwidth = 0.05" = model_bw_5))
+
+
+#
+model_logit <- glm(dv_win ~ treat + rv, family = binomial(link = "logit"),data=data)
+
+```
+
+```{r}
+# Plotting models
+ggplot(data, aes(x = rv, y = dv, color = as.factor(treat))) +
+  geom_point(size = 0.5, alpha = 0.2) + 
+  geom_smooth(data = filter(data, rv <= 0), method = "lm", se = FALSE, linetype = "dotted", size = 1) +
+  geom_smooth(data = filter(data, rv > 0), method = "lm", se = FALSE, linetype = "dotted", size = 1) +
+  geom_smooth(data = filter(data, rv <= 0, rv >= -.10), method = "lm", se = FALSE, linetype = "dashed", size = 1) +
+  geom_smooth(data = filter(data, rv > 0, rv <= .10), method = "lm", se = FALSE, linetype = "dashed", size = 1) +
+  geom_smooth(data = filter(data, rv <= 0, rv >= -.05), method = "lm", se = FALSE, size = 2) +
+  geom_smooth(data = filter(data, rv > 0, rv <= .05), method = "lm", se = FALSE, size = 2) +
+  geom_vline(xintercept = 0) +
+  coord_cartesian(xlim = c(-0.3, 0.3), ylim = c(min(0.4), max(0.8))) +
+  labs(x = "Running Variable (rv)", y = "Outcome (dv)", color = "Treatment")
+```
+
+### Non-parametric estimation
+
+#### Local Average Treatment effect
+
+```{r}
+
+# Non-parametric estimation
+
+#the general election vote share of the party;
+rd_result <- rdrobust(y = data$dv, x = data$rv, c = 0)
+summary(rd_result)
+rdplot(y = data$dv, x = data$rv, c = 0)
+
+
+```
+
+##### Robustness checks
+
+```{r}
+# Check results with different bandwidths
+rdbwselect(y = data$dv, x = data$rv, c = 0, all = TRUE) %>% summary()
+rdrobust(y = data$dv, x = data$rv, c = 0, h = 0.081) %>% summary()
+rdrobust(y = data$dv, x = data$rv, c = 0, h = 0.081*2) %>% summary()
+rdrobust(y = data$dv, x = data$rv, c = 0, h = 0.081/2) %>% summary()
+
+
+rdrobust(y = data$dv, x = data$rv, c = 0, h = 0.081,kernel = "epanechnikov") %>% summary()
+
+rdrobust(y = data$dv, x = data$rv, c = 0, h = 0.081,kernel =  "uniform") %>% summary()
+
+
+####Finally, check whether the results differ between safe and open districts (Figure 3 of the article).
+# Estimate effects for different districts
+safe_model <- rdrobust(y = data$dv, x = data$rv, c = 0, subset = data$safe_for_party == 1)
+summary(safe_model)
+
+open_model <- rdrobust(y = data$dv, x = data$rv, c = 0, subset = data$fully_open_general == 1)
+summary(open_model)
+
+
+
+```
+
+##### Visualisations
+
+```{r}
+# Plot results for safe and open districts
+ggplot(data, aes(x = rv, y = dv, color = as.factor(safe_for_party))) +
+ geom_point(size = 0.5, alpha = 0.5) + 
+ geom_smooth(data = filter(data, rv <= 0, rv >= -.10), method = "lm", se = FALSE, size = 1) +
+  geom_smooth(data = filter(data, rv > 0, rv <= .10), method = "lm", se = FALSE, size = 1) +
+  geom_vline(xintercept = 0) +
+  facet_wrap(~ safe_for_party) +
+  labs(x = "Running Variable (rv)", y = "Outcome (dv)", color = "Safe for Party")
+
+ggplot(data, aes(x = rv, y = dv, color = as.factor(fully_open_general))) +
+  geom_point(size = 0.5, alpha = 0.5) + 
+ geom_smooth(data = filter(data, rv <= 0, rv >= -.10), method = "lm", se = FALSE, size = 1) +
+  geom_smooth(data = filter(data, rv > 0, rv <= .10), method = "lm", se = FALSE, size = 1) +
+  geom_vline(xintercept = 0) +
+  facet_wrap(~ fully_open_general) +
+  labs(x = "Running Variable (rv)", y = "Outcome (dv)", color = "Fully Open General")
+
+
+```
+
+## DV_win: the probability of the party winning the seat in the general election.
+
+### Parametric estimation
+
+#### Average treatment effect
+
+```{r}
+#AVERAGE TREATMENT EFFECT
+#How the running variable explains the general election vote share of party (dv)
+model_simple <- glm(dv_win ~ rv + treat, data = data, family = "binomial")
+tidy(model_simple)
+
+# Check for discontinuity in outcomes across the running variable
+ggplot(data, aes(x = rv, y = dv_win, color = as.factor(treat))) +
+  geom_point(size = 0.5, alpha = 0.5) + 
+  geom_smooth(data = filter(data, rv <= 0),method = "glm", method.args = list(family = "binomial")) +
+  geom_smooth(data = filter(data, rv > 0),method = "glm", method.args = list(family = "binomial")) +
+  geom_vline(xintercept = 0) +
+  labs(x = "Running Variable (rv)", y = "Outcome (dv_win)", color = "Treatment")
+```
+
+### Non-parametric estimation
+
+#### Local Average Treatment Effect
+
+```{r}
+# Non-parametric estimation -> LOCAL AVERAGE TREATMENT
+
+#the general election vote share of the party;
+rd_result <- rdrobust(y = data$dv_win, x = data$rv, c = 0)
+summary(rd_result)
+rdplot(y = data$dv_win, x = data$rv, c = 0)
+
+```
+
+##### Robustness checks
+
+```{r}
+# Check results with different bandwidths
+rdbwselect(y = data$dv_win, x = data$rv, c = 0, all = TRUE) %>% summary()
+rdrobust(y = data$dv_win, x = data$rv, c = 0, h = 0.094) %>% summary()
+rdrobust(y = data$dv_win, x = data$rv, c = 0, h = 0.094*2) %>% summary()
+rdrobust(y = data$dv_win, x = data$rv, c = 0, h = 0.094/2) %>% summary()
+
+
+rdrobust(y = data$dv_win, x = data$rv, c = 0, h = 0.094,kernel = "epanechnikov") %>% summary()
+
+rdrobust(y = data$dv_win, x = data$rv, c = 0, h = 0.094,kernel =  "uniform") %>% summary()
+
+
+####Finally, check whether the results differ between safe and open districts (Figure 3 of the article).
+# Estimate effects for different districts
+safe_model <- rdrobust(y = data$dv_win, x = data$rv, c = 0, subset = data$safe_for_party == 1)
+summary(safe_model)
+
+open_model <- rdrobust(y = data$dv_win, x = data$rv, c = 0, subset = data$fully_open_general == 1)
+summary(open_model)
+
+```
+
+##### Visualisation
+
+```{r}
+# Plot results for safe and open districts for the dv_win  variable
+p<-ggplot(data, aes(x = rv, y = dv_win, color = as.factor(safe_for_party))) +
+  geom_point(size = 0.5, alpha = 0.5) + 
+  geom_smooth(data = filter(data, rv <= 0, rv >= -.094), method = "glm", method.args = list(family = "binomial"), se = FALSE, size = 1) +
+  geom_smooth(data = filter(data, rv > 0, rv <= .094), method = "glm", method.args = list(family = "binomial"), se = FALSE, size = 1) +
+  geom_vline(xintercept = 0) +
+  facet_wrap(~ safe_for_party) +
+  labs(x = "Running Variable (rv)", y = "Outcome (dv_win)", color = "Safe for Party")
+p
+
+p1<-ggplot(data, aes(x = rv, y = dv_win, color = as.factor(fully_open_general))) +
+  geom_point(size = 0.5, alpha = 0.5) + 
+  geom_smooth(data = filter(data, rv <= 0, rv >= -.094), method = "glm", method.args = list(family = "binomial"), se = FALSE, size = 1) +
+  geom_smooth(data = filter(data, rv > 0, rv <= .094), method = "glm", method.args = list(family = "binomial"), se = FALSE, size = 1) +
+  geom_vline(xintercept = 0) +
+  facet_wrap(~ fully_open_general) +
+  labs(x = "Running Variable (rv)", y = "Outcome (dv_win)", color = "Fully open general")
+
+p1
+```
+
+the larger the margin of winning in the primary elections, the higher the win probaility in the general elections.
+
+The extremer the extremist is in the municipality, the win probability decreases
+
+if its safe for the party, the higher the margin which with they have won the primary elections the lower the winning probability. if its a close call it is all the more important to vote for your own party even if it is oed by an extremist
